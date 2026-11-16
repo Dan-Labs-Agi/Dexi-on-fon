@@ -19,7 +19,11 @@ import java.util.concurrent.TimeUnit
 class BackendTools(context: Context, private val log: (String) -> Unit, private val openUrl: (String) -> Unit = {}) {
 
     private val prefs = context.getSharedPreferences("danny", Context.MODE_PRIVATE)
-    private val baseUrl: String get() = prefs.getString("backendUrl", "").orEmpty().trim().trimEnd('/')
+
+    companion object {
+        const val DEFAULT_BACKEND_URL = "https://dani-sandbox-4.tailc62d47.ts.net:10000"
+    }
+    private val baseUrl: String get() = prefs.getString("backendUrl", DEFAULT_BACKEND_URL).orEmpty().trim().trimEnd('/')
     private val deviceToken: String get() = KeyStoreSecrets.decrypt(prefs.getString("backendToken", "").orEmpty()).trim()
     val connected: Boolean get() = baseUrl.startsWith("https://") && deviceToken.length >= 32
 

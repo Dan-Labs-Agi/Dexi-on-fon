@@ -263,7 +263,7 @@ class MainActivity : Activity(), DaniService.Ui {
 
         // ---- DAN cloud ----
         val cloud = section(root, "DAN cloud (Gmail & Calendar)")
-        backendUrlField = field("Backend address (https://...)", prefs.getString("backendUrl", ""))
+        backendUrlField = field("Backend address (https://...)", prefs.getString("backendUrl", BackendTools.DEFAULT_BACKEND_URL))
         cloud.addView(backendUrlField)
         backendTokenField = field("Device token", KeyStoreSecrets.decrypt(prefs.getString("backendToken", "").orEmpty())).apply {
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
@@ -385,7 +385,7 @@ class MainActivity : Activity(), DaniService.Ui {
     }
 
     private fun cloudRequest(path: String, method: String = "GET", body: String? = null): Pair<Int, String> {
-        val base = prefs.getString("backendUrl", "").orEmpty().trim().trimEnd('/')
+        val base = prefs.getString("backendUrl", BackendTools.DEFAULT_BACKEND_URL).orEmpty().trim().trimEnd('/')
         val token = KeyStoreSecrets.decrypt(prefs.getString("backendToken", "").orEmpty())
         if (!base.startsWith("https://") || token.length < 32) return 0 to "not configured"
         val conn = (java.net.URL(base + path).openConnection() as java.net.HttpURLConnection).apply {
@@ -442,7 +442,7 @@ class MainActivity : Activity(), DaniService.Ui {
 
     override fun onResume() {
         super.onResume()
-        if (::cloudAppsView.isInitialized && !prefs.getString("backendUrl", "").isNullOrBlank()) refreshCloudApps()
+        if (::cloudAppsView.isInitialized && !prefs.getString("backendUrl", BackendTools.DEFAULT_BACKEND_URL).isNullOrBlank()) refreshCloudApps()
     }
 
     /** Local log line (the service keeps the shared log). */
