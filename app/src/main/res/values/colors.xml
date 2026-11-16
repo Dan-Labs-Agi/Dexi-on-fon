@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dani palette: ice blue (most of the screen), midnight navy, tangerine accent -->
+    <color name="ice">#E9F0F5</color>
+    <color name="navy">#172C45</color>
+    <color name="tangerine">#FF693D</color>
+    <color name="navy_muted">#99172C45</color>
+</resources>

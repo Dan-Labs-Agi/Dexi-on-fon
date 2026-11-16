@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Dani" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:colorPrimary">@color/navy</item>
+        <item name="android:colorPrimaryDark">@color/navy</item>
+        <!-- switches, text cursor, field underlines, progress bar -->
+        <item name="android:colorAccent">@color/tangerine</item>
+        <item name="android:colorControlActivated">@color/tangerine</item>
+        <item name="android:colorControlNormal">@color/navy_muted</item>
+        <item name="android:windowBackground">@color/ice</item>
+        <item name="android:textColorPrimary">@color/navy</item>
+        <item name="android:textColor">@color/navy</item>
+        <item name="android:textColorHint">@color/navy_muted</item>
+        <item name="android:statusBarColor">@color/navy</item>
+        <item name="android:navigationBarColor">@color/ice</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>
