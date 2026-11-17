@@ -66,6 +66,9 @@ class DaniService : Service(), GlassesLink.Listener, GeminiLive.Listener {
 
     private var live: GeminiLive? = null
     var liveState = LiveState.OFF; private set
+    /** True while reply audio is streaming out; the screen's orb reads it for its speaking state. */
+    @Volatile var speaking = false; private set
+    private val speakingOff = Runnable { speaking = false }
     private val resampler = Resampler24to16()
     private val phoneAudio = PhoneAudio { log(it) }
     @Volatile private var dropReply = false
@@ -405,11 +408,16 @@ class DaniService : Service(), GlassesLink.Listener, GeminiLive.Listener {
 
     override fun onLiveAudio(pcm24k: ShortArray) {
         if (dropReply) return
+        speaking = true
+        main.removeCallbacks(speakingOff)
+        main.postDelayed(speakingOff, 350)
         val pcm = resampler.process(pcm24k)
         if (link.connected) link.streamAudio(pcm) else phoneAudio.play(pcm)
     }
 
     override fun onLiveInterrupted() {
+        speaking = false
+        main.removeCallbacks(speakingOff)
         link.stop()
         phoneAudio.stopSpeaker()
         resampler.reset()
@@ -423,6 +431,8 @@ class DaniService : Service(), GlassesLink.Listener, GeminiLive.Listener {
 
     override fun onLiveClosed(reason: String) {
         main.post {
+            speaking = false
+            main.removeCallbacks(speakingOff)
             phoneAudio.stopAll()
             val session = live
             live = null
