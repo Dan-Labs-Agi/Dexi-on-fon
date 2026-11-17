@@ -84,13 +84,44 @@ class GlassesLink(private val context: Context, private val listener: Listener) 
     private val nearby = LinkedHashMap<String, String>()   // fallback scan: address -> "name rssi"
     private var attempts = 0
     private var healthLogged = false
+    private val prefs = context.getSharedPreferences("glasses-link", Context.MODE_PRIVATE)
+    private var scanRound = 0      // full filtered+unfiltered cycles this attempt
+    private var connectRetries = 0 // GATT connect retries on the current target
+    private var directTried = false
 
     fun connect() {
         if (connected || connecting || scanning) return
         attempts++
         if (!healthLogged) { logHealth(); healthLogged = true }
         log("Looking for the glasses... (attempt $attempts)")
+        connectRetries = 0
+        // In a crowd a scan can miss advertisements; a saved address skips discovery
+        // entirely and goes straight for the link.
+        val saved = prefs.getString("addr", null)
+        if (saved != null && !directTried) {
+            directTried = true
+            log("Trying the saved glasses address $saved directly - no scan needed")
+            val dev = runCatching { adapter?.getRemoteDevice(saved) }.getOrNull()
+            if (dev != null) { connectTo(dev); return }
+            log("Saved address is not usable - scanning instead")
+        }
+        scanRound = 0
         startScan(filtered = true)
+    }
+
+    /** Open a GATT link, closing any half-dead attempt first (stacked gatts are
+     *  the classic Android "connects sometimes" bug). */
+    private fun connectTo(device: BluetoothDevice) {
+        gatt?.close()
+        gatt = null
+        connecting = true
+        refreshed = false
+        try {
+            gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        } catch (e: SecurityException) {
+            connecting = false
+            log("Bluetooth connect blocked - allow the 'Nearby devices' permission")
+        }
     }
 
     /** One-time environment dump: adapter, permissions, network. The log is the only
@@ -159,10 +190,17 @@ class GlassesLink(private val context: Context, private val listener: Listener) 
                 startScan(filtered = false)
             } else {
                 val seen = nearby.entries.take(8).joinToString { (a, n) -> "$n [$a]" }
-                log("Glasses NOT FOUND.")
+                log("Glasses not found in scan round ${scanRound + 1} of 4.")
                 log(if (seen.isEmpty())
                     "The phone sees NO Bluetooth devices at all - the glasses are off, out of range, or already connected to another device (laptop, another phone). Bluetooth scan itself is working."
                     else "Phone sees ${nearby.size} device(s): $seen. No name starting with 'Dani' among them.")
+                if (scanRound < 3) {
+                    scanRound++
+                    log("Keeping at it - round ${scanRound + 1} of 4 starts in 6 s")
+                    main.postDelayed({ if (!connected && !connecting && !scanning) startScan(filtered = true) }, 6000)
+                } else {
+                    log("Glasses NOT FOUND after 4 rounds. Turn the glasses off and on, make sure nothing else is connected to them, then try again.")
+                }
             }
         }, if (filtered) 15000 else 10000)
     }
@@ -200,13 +238,8 @@ class GlassesLink(private val context: Context, private val listener: Listener) 
             }
             stopScan()
             log("Connecting to ${device.address} (${bondText(device.bondState)})...")
-            // Close any half-dead attempt before opening a new one (stacked gatts are
-            // the classic Android "connects sometimes" bug).
-            gatt?.close()
-            gatt = null
-            connecting = true
-            refreshed = false
-            gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+            connectRetries = 0
+            connectTo(device)
         }
 
         override fun onScanFailed(errorCode: Int) {
@@ -241,6 +274,8 @@ class GlassesLink(private val context: Context, private val listener: Listener) 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
+                prefs.edit().putString("addr", g.device.address).apply()   // direct link next time
+                connectRetries = 0
                 g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                 g.requestMtu(517)   // big packets: one 20 ms audio frame each
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
@@ -251,8 +286,26 @@ class GlassesLink(private val context: Context, private val listener: Listener) 
                 if (gatt == g) gatt = null
                 opDone.release()
                 main.post { listener.onConnection(false, null) }
-                log(if (was) "Disconnected: ${statusText(status)}"
-                    else "Connection failed: ${statusText(status)} - will retry")
+                if (was) {
+                    log("Disconnected: ${statusText(status)}")
+                } else if (connectRetries < 3) {
+                    // Transient RF loss (crowd, distance) fails connects with 133/62;
+                    // spaced retries ride it out.
+                    connectRetries++
+                    val wait = 500L * connectRetries
+                    connecting = true
+                    log("Connection failed: ${statusText(status)} - retry $connectRetries/3 in $wait ms")
+                    val dev = g.device
+                    main.postDelayed({ if (!connected) connectTo(dev) }, wait)
+                } else {
+                    log("Connection failed 3 times: ${statusText(status)}")
+                    if (directTried) {
+                        log("Direct link to the saved address failed - scanning for the glasses instead")
+                        directTried = false
+                        scanRound = 0
+                        main.postDelayed({ if (!connected && !connecting && !scanning) startScan(filtered = true) }, 1000)
+                    }
+                }
             }
         }
 
