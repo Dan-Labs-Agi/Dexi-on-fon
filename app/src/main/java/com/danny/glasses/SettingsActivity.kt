@@ -369,6 +369,7 @@ class SettingsActivity : Activity(), DaniService.Ui {
             textSize = 12f
             typeface = Typeface.MONOSPACE
             setTextColor(Color.parseColor("#D4D4D8"))
+            setTextIsSelectable(true)
             gravity = Gravity.TOP
             minHeight = dp(140)
             background = rounded(Color.parseColor("#09090B"), 12)
@@ -376,6 +377,12 @@ class SettingsActivity : Activity(), DaniService.Ui {
             setLineSpacing(0f, 1.15f)
         }
         logCard.addView(logView, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(10) })
+        button(logCard, "Copy log", test = false) {
+            val cm = getSystemService(android.content.ClipboardManager::class.java)
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("Dani log",
+                service?.logText() ?: logView.text.toString()))
+            android.widget.Toast.makeText(this, "Log copied", android.widget.Toast.LENGTH_SHORT).show()
+        }
 
         setContentView(ScrollView(this).apply {
             setBackgroundColor(ICE)

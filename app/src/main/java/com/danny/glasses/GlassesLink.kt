@@ -249,7 +249,8 @@ class GlassesLink(private val context: Context, private val listener: Listener) 
     private fun awaitOp(start: () -> Boolean): Boolean {
         synchronized(gattLock) {
             opDone.drainPermits()
-            repeat(20) {
+            // Bounded: a wedged stack must not queue-block every later command for minutes.
+            repeat(3) {
                 if (start()) return opDone.tryAcquire(4, TimeUnit.SECONDS)
                 Thread.sleep(5)  // stack busy: try again
             }
