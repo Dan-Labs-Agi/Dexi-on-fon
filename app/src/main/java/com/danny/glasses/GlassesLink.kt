@@ -14,6 +14,9 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -77,17 +80,100 @@ class GlassesLink(private val context: Context, private val listener: Listener) 
 
     // ---------------- connect ----------------
 
+    private var scanPhase = 0   // 0 = by service UUID, 1 = unfiltered fallback (match by name)
+    private val nearby = LinkedHashMap<String, String>()   // fallback scan: address -> "name rssi"
+    private var attempts = 0
+    private var healthLogged = false
+
     fun connect() {
         if (connected || connecting || scanning) return
+        attempts++
+        if (!healthLogged) { logHealth(); healthLogged = true }
+        log("Looking for the glasses... (attempt $attempts)")
+        startScan(filtered = true)
+    }
+
+    /** One-time environment dump: adapter, permissions, network. The log is the only
+     *  signal we get from the phone, so make it tell the whole story. */
+    private fun logHealth() {
+        log("Bluetooth adapter: " + if (adapter?.isEnabled == true) "on" else "OFF - turn Bluetooth on")
+        val scan = context.checkSelfPermission(android.Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
+        val conn = context.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        log("Permissions: Nearby devices (scan) " + (if (scan) "ok" else "MISSING") +
+            ", Bluetooth connect " + (if (conn) "ok" else "MISSING"))
+        val net = runCatching {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val caps = cm.activeNetwork?.let { cm.getNetworkCapabilities(it) }
+            when {
+                caps == null -> "none (offline)"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "mobile data"
+                else -> "other"
+            }
+        }.getOrDefault("unknown")
+        log("Phone network: $net")
+    }
+
+    private fun statusText(status: Int) = when (status) {
+        0 -> "ok"
+        8 -> "link lost / supervision timeout"
+        19 -> "glasses ended the connection"
+        22 -> "glasses not responding (off or out of range)"
+        62 -> "connection could not be established"
+        133 -> "Android Bluetooth error 133 (usually transient - the retry fixes it)"
+        else -> "status $status"
+    }
+
+    private fun bondText(state: Int) = when (state) {
+        BluetoothDevice.BOND_BONDED -> "paired"
+        BluetoothDevice.BOND_BONDING -> "pairing..."
+        else -> "not paired"
+    }
+
+    /**
+     * Phase 1: filter on the advertised service UUID. Some firmware builds don't fit the
+     * 128-bit UUID in the advertisement, so phase 2 scans unfiltered, collects everything
+     * nearby, and connects to the first name starting with "Dani-".
+     */
+    private fun startScan(filtered: Boolean) {
         val scanner = adapter?.bluetoothLeScanner ?: return log("Bluetooth is off")
-        log("Looking for the glasses...")
         scanning = true
-        val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE)).build()
+        scanPhase = if (filtered) 0 else 1
+        if (!filtered) nearby.clear()
+        val filters = if (filtered) listOf(ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE)).build()) else null
         val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
-        scanner.startScan(listOf(filter), settings, scanCallback)
+        log(if (filtered) "Scan started: filtering for the glasses' service id (15 s)"
+            else "Scan started: unfiltered, listing every device nearby (10 s)")
+        try {
+            scanner.startScan(filters, settings, scanCallback)
+        } catch (e: SecurityException) {
+            scanning = false
+            log("Bluetooth scan blocked - allow the 'Nearby devices' permission")
+            return
+        }
         main.postDelayed({
-            if (scanning) { stopScan(); log("Glasses not found. Is the LED blinking?") }
-        }, 15000)
+            if (!scanning) return@postDelayed
+            stopScan()
+            if (filtered) {
+                log("Not found by service id - scanning everything nearby...")
+                startScan(filtered = false)
+            } else {
+                val seen = nearby.entries.take(8).joinToString { (a, n) -> "$n [$a]" }
+                log("Glasses NOT FOUND.")
+                log(if (seen.isEmpty())
+                    "The phone sees NO Bluetooth devices at all - the glasses are off, out of range, or already connected to another device (laptop, another phone). Bluetooth scan itself is working."
+                    else "Phone sees ${nearby.size} device(s): $seen. No name starting with 'Dani' among them.")
+            }
+        }, if (filtered) 15000 else 10000)
+    }
+
+    // Signal strength over time, every 10 s while connected.
+    private val rssiPoller = object : Runnable {
+        override fun run() {
+            if (!connected) return
+            runCatching { gatt?.readRemoteRssi() }
+            main.postDelayed(this, 10000)
+        }
     }
 
     private fun stopScan() {
@@ -99,9 +185,21 @@ class GlassesLink(private val context: Context, private val listener: Listener) 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             if (!scanning) return
-            stopScan()
             val device = result.device
-            log("Found ${device.name ?: device.address}, connecting...")
+            val name = device.name ?: result.scanRecord?.deviceName
+            if (scanPhase == 1) {
+                if (!nearby.containsKey(device.address) && nearby.size < 30) {
+                    val uuids = result.scanRecord?.serviceUuids?.joinToString { it.uuid.toString().take(13) } ?: "none"
+                    nearby[device.address] = "${name ?: "?"} ${result.rssi}dBm"
+                    log("Nearby: ${name ?: "?"} ${device.address} rssi=${result.rssi} svc=$uuids")
+                }
+                if (name == null || !name.startsWith("Dani")) return
+                log("Glasses FOUND by name: $name ${device.address} rssi=${result.rssi}")
+            } else {
+                log("Glasses FOUND by service id: ${name ?: device.address} rssi=${result.rssi}")
+            }
+            stopScan()
+            log("Connecting to ${device.address} (${bondText(device.bondState)})...")
             // Close any half-dead attempt before opening a new one (stacked gatts are
             // the classic Android "connects sometimes" bug).
             gatt?.close()
@@ -113,7 +211,18 @@ class GlassesLink(private val context: Context, private val listener: Listener) 
 
         override fun onScanFailed(errorCode: Int) {
             scanning = false
-            log("Scan failed ($errorCode)")
+            log(when (errorCode) {
+                ScanCallback.SCAN_FAILED_APPLICATION_REGISTRATION_FAILED ->
+                    "Scan failed: permission missing - allow 'Nearby devices'"
+                ScanCallback.SCAN_FAILED_SCANNING_TOO_FREQUENTLY ->
+                    "Scan failed: Android is rate-limiting scans - waiting for the next retry"
+                ScanCallback.SCAN_FAILED_FEATURE_UNSUPPORTED ->
+                    "Scan failed: filtered scans unsupported - retrying unfiltered"
+                else -> "Scan failed ($errorCode)"
+            })
+            if (errorCode == ScanCallback.SCAN_FAILED_FEATURE_UNSUPPORTED && scanPhase == 0) {
+                main.postDelayed({ if (!connected && !connecting && !scanning) startScan(filtered = false) }, 500)
+            }
         }
     }
 
@@ -142,9 +251,8 @@ class GlassesLink(private val context: Context, private val listener: Listener) 
                 if (gatt == g) gatt = null
                 opDone.release()
                 main.post { listener.onConnection(false, null) }
-                // 133 is Android's generic GATT failure - the retry loop handles it.
-                if (!was) log(if (status == 133) "Connection failed (133) - will retry"
-                              else "Connection failed ($status)")
+                log(if (was) "Disconnected: ${statusText(status)}"
+                    else "Connection failed: ${statusText(status)} - will retry")
             }
         }
 
@@ -174,7 +282,11 @@ class GlassesLink(private val context: Context, private val listener: Listener) 
             worker.execute {
                 // Both notification enables must succeed before we call this connected:
                 // CTRL first, then MIC, per the protocol.
-                val ok = enableNotify(ctrlChar!!) && enableNotify(micChar!!)
+                val ctrlOk = enableNotify(ctrlChar!!)
+                log("CTRL notifications: " + if (ctrlOk) "on" else "FAILED")
+                val micOk = enableNotify(micChar!!)
+                log("MIC notifications: " + if (micOk) "on" else "FAILED")
+                val ok = ctrlOk && micOk
                 if (!ok) {
                     log("Audio setup failed - reconnecting")
                     main.post { gatt?.disconnect() }   // DISCONNECTED callback drives the retry
@@ -182,14 +294,20 @@ class GlassesLink(private val context: Context, private val listener: Listener) 
                 }
                 connected = true
                 connecting = false
+                attempts = 0
                 lastMicSeq = -1
                 main.post { listener.onConnection(true, g.device.name) }
                 log("Connected (packet size $mtu)")
+                main.post(rssiPoller)
             }
         }
 
         override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
             opDone.release()
+        }
+
+        override fun onReadRemoteRssi(g: BluetoothGatt, rssi: Int, status: Int) {
+            if (status == 0) log("Glasses signal: $rssi dBm")
         }
 
         override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
