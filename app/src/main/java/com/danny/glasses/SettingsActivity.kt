@@ -40,7 +40,6 @@ class SettingsActivity : Activity(), DaniService.Ui {
     private var service: DaniService? = null
     private val main = Handler(Looper.getMainLooper())
     private val prefs by lazy { getSharedPreferences("danny", MODE_PRIVATE) }
-    private lateinit var googleAuth: GoogleAuth
 
     private lateinit var status: TextView
     private lateinit var meter: ProgressBar
@@ -57,8 +56,6 @@ class SettingsActivity : Activity(), DaniService.Ui {
     private lateinit var voiceField: EditText
     private lateinit var searchSwitch: android.widget.Switch
     private lateinit var sayText: EditText
-    private lateinit var googleButton: Button
-    private lateinit var googleAccount: TextView
     private val testButtons = mutableListOf<View>()
 
     // Echo test recording and live listening (fed by the service's mic tap)
@@ -82,7 +79,6 @@ class SettingsActivity : Activity(), DaniService.Ui {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        googleAuth = GoogleAuth(this)
         buildUi()
         askPermissions()
     }
@@ -309,25 +305,6 @@ class SettingsActivity : Activity(), DaniService.Ui {
         }
         hint(bgSection,"While connected, Dani runs in the background and shows a notification with a Stop button. " +
             "OnePlus phones may still close background apps unless the battery setting is \"Unrestricted\".")
-
-        // ---- Google account ----
-        val google = section(root, "Gmail + Calendar")
-        googleAccount = TextView(this).apply {
-            textSize = 15f
-            setPadding(0, dp(8), 0, 0)
-            setTypeface(typeface, Typeface.BOLD)
-        }
-        google.addView(googleAccount)
-        googleButton = button(google, googleLabel(), test = false, primary = true) {
-            if (googleAuth.connected) confirmLogout() else {
-                log("Opening Google sign-in...")
-                googleAuth.signIn(this) { ok, message -> onGoogleResult(ok, message) }
-            }
-        }
-        refreshGoogle()
-        if (googleAuth.connected && googleAuth.accountEmail == null) fetchGoogleProfile()
-        hint(google, "Dani can read your Gmail and see and add Calendar events. It can't send or delete email, " +
-            "and it asks before adding an event. Start a new session after connecting.")
 
         // ---- Tests ----
         val tests = section(root, "Glasses tests")
@@ -627,69 +604,4 @@ class SettingsActivity : Activity(), DaniService.Ui {
         if (::listenButton.isInitialized) listenButton.text = "Listen live (glasses mic → phone speaker)"
     }
 
-    // ---------------- Google account ----------------
-
-    private fun googleLabel() = if (googleAuth.connected) "Log out" else "Connect Google account"
-
-    private fun refreshGoogle() {
-        googleButton.text = googleLabel()
-        styleButton(googleButton, primary = !googleAuth.connected)
-        if (!googleAuth.connected) {
-            googleAccount.text = "Not connected"
-            googleAccount.setTextColor(NAVY_MUTED)
-            return
-        }
-        val name = googleAuth.accountName
-        val email = googleAuth.accountEmail
-        googleAccount.text = "✓ Signed in as " + when {
-            name != null && email != null -> "$name\n$email"
-            email != null -> email
-            name != null -> name
-            else -> "your Google account"
-        }
-        googleAccount.setTextColor(NAVY)
-    }
-
-    private fun fetchGoogleProfile() {
-        Thread { googleAuth.fetchProfile(); main.post { refreshGoogle() } }.start()
-    }
-
-    private fun confirmLogout() {
-        val who = googleAuth.accountEmail ?: googleAuth.accountName ?: "your Google account"
-        android.app.AlertDialog.Builder(this)
-            .setTitle("Log out of Google?")
-            .setMessage("Dani will no longer be able to read Gmail or use Calendar for $who. " +
-                "You can connect again any time.")
-            .setPositiveButton("Log out") { _, _ ->
-                googleButton.isEnabled = false
-                Thread {
-                    val revoked = googleAuth.logout()
-                    main.post {
-                        googleButton.isEnabled = true
-                        refreshGoogle()
-                        log(if (revoked) "Logged out of Google; Dani's access was revoked."
-                            else "Logged out of Google on this phone.")
-                        if (service?.liveState != DaniService.LiveState.OFF) log("Restart the Gemini session to apply this.")
-                    }
-                }.start()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    private fun onGoogleResult(ok: Boolean, message: String) {
-        refreshGoogle()
-        log(if (ok) "$message. Start a new Gemini session to use it." else "Google sign-in: $message")
-        if (ok) fetchGoogleProfile()
-    }
-
-    @Deprecated("Activity result API")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        @Suppress("DEPRECATION")
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == GoogleAuth.REQUEST_CODE) {
-            val (ok, message) = googleAuth.handleResult(this, data)
-            onGoogleResult(ok, message)
-        }
-    }
 }

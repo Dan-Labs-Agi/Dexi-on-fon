@@ -11,8 +11,8 @@ android {
         applicationId = "com.danny.glasses"
         minSdk = 31          // Android 12+: the new Bluetooth permissions
         targetSdk = 34
-        versionCode = 8
-        versionName = "0.2.6"
+        versionCode = 9
+        versionName = "0.2.7"
     }
 
     buildTypes {
@@ -32,7 +32,5 @@ android {
 dependencies {
     // WebSocket client for the Gemini Live API (Android has none built in).
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    // Google sign-in for Gmail and Calendar (Authorization API)
-    implementation("com.google.android.gms:play-services-auth:21.3.0")
     testImplementation("junit:junit:4.13.2")
 }
