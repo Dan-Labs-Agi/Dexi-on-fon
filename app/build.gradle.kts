@@ -11,8 +11,8 @@ android {
         applicationId = "com.danny.glasses"
         minSdk = 31          // Android 12+: the new Bluetooth permissions
         targetSdk = 34
-        versionCode = 3
-        versionName = "0.2.1"
+        versionCode = 4
+        versionName = "0.2.2"
     }
 
     buildTypes {

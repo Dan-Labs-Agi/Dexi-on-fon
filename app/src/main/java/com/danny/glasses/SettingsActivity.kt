@@ -94,6 +94,13 @@ class SettingsActivity : Activity(), DaniService.Ui {
         searchSwitch.isChecked = prefs.getBoolean("search", false)
     }
 
+    override fun onPause() {
+        super.onPause()
+        // Never lose typed settings: leaving this screen saves both forms.
+        if (::keyField.isInitialized) saveGeminiSettings()
+        if (::backendUrlField.isInitialized) saveCloudSettings()
+    }
+
     override fun onStop() {
         stopListening()
         service?.let { it.ui = null; it.micTap = null }
@@ -265,7 +272,7 @@ class SettingsActivity : Activity(), DaniService.Ui {
         val cloud = section(root, "DAN cloud (Gmail & Calendar)")
         backendUrlField = field("Backend address (https://...)", prefs.getString("backendUrl", BackendTools.DEFAULT_BACKEND_URL))
         cloud.addView(backendUrlField)
-        backendTokenField = field("Device token", KeyStoreSecrets.decrypt(prefs.getString("backendToken", "").orEmpty())).apply {
+        backendTokenField = field("Device token (from your assistant vault)", KeyStoreSecrets.decrypt(prefs.getString("backendToken", "").orEmpty())).apply {
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
         cloud.addView(backendTokenField)
@@ -352,10 +359,10 @@ class SettingsActivity : Activity(), DaniService.Ui {
         logView = TextView(this).apply {
             textSize = 12f
             typeface = Typeface.MONOSPACE
-            setTextColor(ICE)
+            setTextColor(Color.parseColor("#D4D4D8"))
             gravity = Gravity.TOP
             minHeight = dp(140)
-            background = rounded(SUBTLE, 12)
+            background = rounded(Color.parseColor("#09090B"), 12)
             setPadding(dp(12), dp(10), dp(12), dp(10))
             setLineSpacing(0f, 1.15f)
         }
@@ -415,11 +422,17 @@ class SettingsActivity : Activity(), DaniService.Ui {
                     append("Cloud apps: ")
                     for (i in 0 until apps.length()) {
                         val a = apps.getJSONObject(i)
+                        // Optional apps that are not connected (e.g. github) are not problems - skip them.
+                        if (a.optBoolean("optional") && !a.optBoolean("connected")) continue
                         append(a.getString("toolkit")).append(if (a.optBoolean("connected")) " ✓  " else " ✗  ")
                     }
                 }.trimEnd()
             } catch (e: Exception) { "Cloud apps: unreadable response" }
-            else "Cloud apps: " + (if (code == 401) "device token rejected" else "unreachable ($code)")
+            else "Cloud apps: " + when (code) {
+                401 -> "device token rejected - paste the current token, then Save"
+                0 -> "enter the backend address and token, then Save"
+                else -> "unreachable ($code)"
+            }
             runOnUiThread { cloudAppsView.text = label }
         }.start()
     }
@@ -434,7 +447,11 @@ class SettingsActivity : Activity(), DaniService.Ui {
                     startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                     cloudAppsView.text = "Cloud apps: finish the sign-in in the browser, then come back and tap Save & refresh."
                 } else {
-                    cloudAppsView.text = "Cloud apps: could not start the $toolkit connection ($code)."
+                    cloudAppsView.text = "Cloud apps: " + when (code) {
+                        401 -> "device token rejected - paste the current token, then Save."
+                        0 -> "enter the backend address and token, then tap Save first."
+                        else -> "could not start the $toolkit connection ($code)."
+                    }
                 }
             }
         }.start()

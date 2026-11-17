@@ -63,6 +63,7 @@ class MainActivity : Activity(), DaniService.Ui {
         super.onStart()
         bindService(Intent(this, DaniService::class.java), connection, BIND_AUTO_CREATE)
         main.post(stateTicker)
+        onStateChanged()   // pick up anything changed in Settings while we were away
     }
 
     override fun onStop() {
@@ -156,6 +157,9 @@ class MainActivity : Activity(), DaniService.Ui {
 
     // ---------------- state ----------------
 
+    private val hasKey: Boolean
+        get() = KeyStoreSecrets.decrypt(prefs.getString("apiKey", "").orEmpty()).isNotBlank()
+
     private fun updateOrbState() {
         val s = service
         orb.state = when {
@@ -176,6 +180,7 @@ class MainActivity : Activity(), DaniService.Ui {
             s.liveState == DaniService.LiveState.READY && s.speaking -> "Dani is speaking"
             s.liveState == DaniService.LiveState.READY -> "Listening"
             s.liveState == DaniService.LiveState.CONNECTING -> "Connecting to Gemini..."
+            !hasKey -> "Finish setup to start"
             s.glassesConnected -> "Connected to ${s.glassesName ?: "glasses"}"
             s.running -> "Looking for your glasses..."
             else -> "Tap the orb to talk"
@@ -183,6 +188,9 @@ class MainActivity : Activity(), DaniService.Ui {
         hint.text = when {
             s?.liveState == DaniService.LiveState.READY ->
                 "Tap the orb to stop. On the glasses: press to interrupt, hold 2 s to end."
+            !hasKey ->
+                "Tap the gear, paste your Gemini API key, then come back and tap the orb. " +
+                "For Gmail and Calendar, also paste the device token there and tap Save."
             else ->
                 "Tap the orb to start or stop. With the glasses on, press the button to talk, hold 2 s to end."
         }
