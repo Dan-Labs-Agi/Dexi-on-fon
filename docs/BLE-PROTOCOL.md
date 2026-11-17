@@ -82,7 +82,7 @@ itself, but it also means the user can't interrupt by voice while it talks. Use 
 |---|---|
 | `hello name=Dani-XXXX fw=1.0 rate=16000 codec=ima-adpcm frame=320` | right after you enable CTRL notifications |
 | `stat level=N buffer=MS playing=0/1 drops=N` | every 0.5 s: mic loudness (RMS: quiet ≈ 200–500, speech 2,000–15,000), queued playback in ms |
-| `button down` / `button up` | the glasses' button (BOOT on the XIAO), e.g. push-to-talk or "start assistant" |
+| `button down` / `button up` | the glasses' button (the board's boot button), e.g. push-to-talk or "start assistant" |
 | `ok …`, `error …` | replies to commands |
 
 ## Security
