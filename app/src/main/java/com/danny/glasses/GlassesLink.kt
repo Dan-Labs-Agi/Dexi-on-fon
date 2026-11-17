@@ -64,6 +64,8 @@ class GlassesLink(private val context: Context, private val listener: Listener) 
     private val micPcm = ShortArray(1024)
 
     @Volatile var connected = false; private set
+    @Volatile private var connecting = false   // a connectGatt attempt is in flight
+    private var refreshed = false              // stale-cache refresh already tried on this link
     @Volatile var mtu = 23; private set
     @Volatile var bufferMs = 0; private set
     @Volatile var micPackets = 0; private set
@@ -76,7 +78,7 @@ class GlassesLink(private val context: Context, private val listener: Listener) 
     // ---------------- connect ----------------
 
     fun connect() {
-        if (connected || scanning) return
+        if (connected || connecting || scanning) return
         val scanner = adapter?.bluetoothLeScanner ?: return log("Bluetooth is off")
         log("Looking for the glasses...")
         scanning = true
@@ -100,6 +102,12 @@ class GlassesLink(private val context: Context, private val listener: Listener) 
             stopScan()
             val device = result.device
             log("Found ${device.name ?: device.address}, connecting...")
+            // Close any half-dead attempt before opening a new one (stacked gatts are
+            // the classic Android "connects sometimes" bug).
+            gatt?.close()
+            gatt = null
+            connecting = true
+            refreshed = false
             gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
         }
 
@@ -111,8 +119,14 @@ class GlassesLink(private val context: Context, private val listener: Listener) 
 
     fun disconnect() {
         stopScan()
+        connecting = false
         synchronized(streamLock) { streamLen = 0; streamGeneration++ }
-        gatt?.disconnect()
+        // Close the client interface now - never wait for the callback, and never
+        // let a zombie gatt coexist with the next attempt.
+        val g = gatt
+        gatt = null
+        g?.disconnect()
+        g?.close()
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
@@ -123,11 +137,14 @@ class GlassesLink(private val context: Context, private val listener: Listener) 
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 val was = connected
                 connected = false
+                connecting = false
                 g.close()
                 if (gatt == g) gatt = null
                 opDone.release()
                 main.post { listener.onConnection(false, null) }
-                if (!was) log("Connection failed ($status)")
+                // 133 is Android's generic GATT failure - the retry loop handles it.
+                if (!was) log(if (status == 133) "Connection failed (133) - will retry"
+                              else "Connection failed ($status)")
             }
         }
 
@@ -137,14 +154,34 @@ class GlassesLink(private val context: Context, private val listener: Listener) 
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            val service = g.getService(SERVICE) ?: return log("Glasses service missing")
+            var service = g.getService(SERVICE)
+            if (service == null && !refreshed) {
+                // Stale attribute cache (e.g. after a firmware flash): refresh once and rediscover.
+                refreshed = true
+                log("Glasses service missing - refreshing the Bluetooth cache")
+                runCatching { g.javaClass.getMethod("refresh").invoke(g) }
+                g.discoverServices()
+                return
+            }
+            if (service == null) {
+                log("Glasses service missing - reconnecting")
+                g.disconnect()
+                return
+            }
             micChar = service.getCharacteristic(MIC)
             spkChar = service.getCharacteristic(SPK)
             ctrlChar = service.getCharacteristic(CTRL)
             worker.execute {
-                enableNotify(ctrlChar!!)
-                enableNotify(micChar!!)
+                // Both notification enables must succeed before we call this connected:
+                // CTRL first, then MIC, per the protocol.
+                val ok = enableNotify(ctrlChar!!) && enableNotify(micChar!!)
+                if (!ok) {
+                    log("Audio setup failed - reconnecting")
+                    main.post { gatt?.disconnect() }   // DISCONNECTED callback drives the retry
+                    return@execute
+                }
                 connected = true
+                connecting = false
                 lastMicSeq = -1
                 main.post { listener.onConnection(true, g.device.name) }
                 log("Connected (packet size $mtu)")
@@ -213,18 +250,18 @@ class GlassesLink(private val context: Context, private val listener: Listener) 
         synchronized(gattLock) {
             opDone.drainPermits()
             repeat(20) {
-                if (start()) return opDone.tryAcquire(2, TimeUnit.SECONDS)
+                if (start()) return opDone.tryAcquire(4, TimeUnit.SECONDS)
                 Thread.sleep(5)  // stack busy: try again
             }
             return false
         }
     }
 
-    private fun enableNotify(c: BluetoothGattCharacteristic) {
-        val g = gatt ?: return
+    private fun enableNotify(c: BluetoothGattCharacteristic): Boolean {
+        val g = gatt ?: return false
         g.setCharacteristicNotification(c, true)
-        val d = c.getDescriptor(CCCD) ?: return
-        awaitOp {
+        val d = c.getDescriptor(CCCD) ?: return false
+        return awaitOp {
             if (Build.VERSION.SDK_INT >= 33) {
                 g.writeDescriptor(d, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) == BluetoothStatusCodes.SUCCESS
             } else {

@@ -225,6 +225,15 @@ class SettingsActivity : Activity(), DaniService.Ui {
             setPadding(0, dp(4), 0, 0)
         }
         header.addView(status)
+        // Always show the build: support asks "which version?" first.
+        header.addView(TextView(this).apply {
+            text = runCatching {
+                val pi = packageManager.getPackageInfo(packageName, 0)
+                "v${pi.versionName} (build ${pi.longVersionCode})"
+            }.getOrDefault("version unknown")
+            textSize = 11f
+            setTextColor(NAVY_MUTED)
+        })
         connectButton = button(header, "Connect to glasses", test = false, primary = true) { toggleConnect() }
         (connectButton.layoutParams as LinearLayout.LayoutParams).topMargin = dp(14)
         page.addView(header)
