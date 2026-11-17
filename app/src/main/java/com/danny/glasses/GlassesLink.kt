@@ -173,7 +173,17 @@ class GlassesLink(private val context: Context, private val listener: Listener) 
         if (uuid == MIC) {
             if (value.size <= 5) return
             val seq = (value[0].toInt() and 0xFF) or ((value[1].toInt() and 0xFF) shl 8)
-            if (lastMicSeq >= 0) micLost += (seq - lastMicSeq - 1) and 0xFFFF
+            if (lastMicSeq >= 0) {
+                val gap = (seq - lastMicSeq - 1) and 0xFFFF
+                micLost += gap
+                // Protocol: lost packets leave a time hole - fill it with silence (320 samples
+                // per lost 20 ms packet). Guard the size so a glasses reboot (seq reset to 0,
+                // looking like a huge gap) doesn't flood the stream.
+                if (gap in 1..50) {
+                    val silence = ShortArray(gap * FRAME)
+                    listener.onMicAudio(silence, silence.size)
+                }
+            }
             lastMicSeq = seq
             micPackets++
             val pred = ((value[2].toInt() and 0xFF) or (value[3].toInt() shl 8)).toShort().toInt()
