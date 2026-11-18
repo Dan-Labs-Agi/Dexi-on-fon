@@ -32,6 +32,41 @@ class BackendTools(context: Context, private val log: (String) -> Unit, private 
         .readTimeout(35, TimeUnit.SECONDS)
         .build()
 
+    // The cloud agent can think for up to a minute on a hard question.
+    private val httpAgent = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(100, TimeUnit.SECONDS)
+        .build()
+
+    /**
+     * Text chat with the shared cloud agent - the same conversation the Telegram bot uses,
+     * so context carries over between the phone, the bot and (next) the glasses themselves.
+     */
+    fun agentChat(message: String): JSONObject = try {
+        if (!connected) throw NotConfigured()
+        val body = JSONObject().put("message", message).put("conversation_id", "som")
+        val request = Request.Builder()
+            .url("$baseUrl/v1/agent")
+            .header("authorization", "Bearer $deviceToken")
+            .post(body.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+        httpAgent.newCall(request).execute().use { response ->
+            val text = response.body?.string().orEmpty()
+            val json = runCatching { JSONObject(text) }.getOrNull()
+            when {
+                response.code == 401 -> JSONObject().put("error", "The device token was rejected. Check it in the app's Settings.")
+                !response.isSuccessful -> JSONObject().put("error",
+                    json?.optString("error")?.ifBlank { null } ?: "The cloud agent could not answer right now.")
+                else -> JSONObject().put("result", json?.optString("reply")?.ifBlank { null } ?: "(no reply)")
+            }
+        }
+    } catch (e: NotConfigured) {
+        JSONObject().put("error", e.message)
+    } catch (e: Exception) {
+        log("agentChat failed: ${e.javaClass.simpleName}")
+        JSONObject().put("error", "The DAN cloud is unreachable right now. Check the phone's internet.")
+    }
+
     class NotConfigured : Exception(
         "The DAN cloud isn't set up. Ask the user to enter the backend address and device token in the app's Settings."
     )

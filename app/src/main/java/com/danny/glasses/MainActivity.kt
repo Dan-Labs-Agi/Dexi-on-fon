@@ -33,6 +33,9 @@ class MainActivity : Activity(), DaniService.Ui {
     private lateinit var status: TextView
     private lateinit var hint: TextView
     private lateinit var glassesRow: TextView
+    private lateinit var agentInput: android.widget.EditText
+    private lateinit var agentReply: TextView
+    private val backendTools by lazy { BackendTools(this, { }) }
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -139,20 +142,66 @@ class MainActivity : Activity(), DaniService.Ui {
             android.view.ViewGroup.LayoutParams.WRAP_CONTENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.CENTER))
 
-        // Bottom row: glasses connection, on request only
+        // Bottom column: cloud-agent chat, then glasses connection
+        val bottom = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), 0, dp(16), 0)
+        }
+        agentReply = TextView(this).apply {
+            textSize = 13.5f
+            setTextColor(WHITE)
+            gravity = Gravity.CENTER
+            setPadding(dp(8), 0, dp(8), dp(6))
+            visibility = View.GONE
+        }
+        bottom.addView(agentReply)
+        val chatRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        agentInput = android.widget.EditText(this).apply {
+            this.hint = "Text Dani (cloud agent)"
+            textSize = 14f
+            setHintTextColor(DIM)
+            setTextColor(WHITE)
+            setSingleLine(true)
+        }
+        chatRow.addView(agentInput, LinearLayout.LayoutParams(0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        chatRow.addView(TextView(this).apply {
+            text = "Send"
+            textSize = 15f
+            setTextColor(WHITE)
+            setPadding(dp(16), dp(10), dp(8), dp(10))
+            setOnClickListener { sendAgent() }
+        })
+        bottom.addView(chatRow)
         glassesRow = TextView(this).apply {
             textSize = 13f
             setTextColor(GRAY)
             gravity = Gravity.CENTER
-            setPadding(dp(16), dp(14), dp(16), dp(22))
+            setPadding(dp(16), dp(10), dp(16), dp(22))
             setOnClickListener { toggleConnect() }
         }
-        root.addView(glassesRow, FrameLayout.LayoutParams(
+        bottom.addView(glassesRow)
+        root.addView(bottom, FrameLayout.LayoutParams(
             android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM))
 
         setContentView(root)
         onStateChanged()
+    }
+
+    private fun sendAgent() {
+        val text = agentInput.text.toString().trim()
+        if (text.isEmpty()) return
+        agentInput.text.clear()
+        agentReply.visibility = View.VISIBLE
+        agentReply.text = "…"
+        Thread {
+            val r = backendTools.agentChat(text)
+            val out = r.optString("result").ifBlank { r.optString("error").ifBlank { "(no reply)" } }
+            main.post { agentReply.text = out }
+        }.start()
     }
 
     // ---------------- state ----------------
